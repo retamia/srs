@@ -887,6 +887,8 @@ srs_error_t SrsRtmpConn::do_publishing(SrsLiveSource* source, SrsPublishRecvThre
     
     int64_t nb_msgs = 0;
     uint64_t nb_frames = 0;
+    uint64_t recv_audio_bytes = 0;
+    uint64_t recv_video_bytes = 0;
     while (true) {
         if ((err = trd->pull()) != srs_success) {
             return srs_error_wrap(err, "rtmp: thread quit");
@@ -918,14 +920,16 @@ srs_error_t SrsRtmpConn::do_publishing(SrsLiveSource* source, SrsPublishRecvThre
         // Update the stat for video fps.
         // @remark https://github.com/ossrs/srs/issues/851
         SrsStatistic* stat = SrsStatistic::instance();
-        if ((err = stat->on_video_frames(req, (int)(rtrd->nb_video_frames() - nb_frames), rtrd->get_video_pts())) != srs_success) {
+        if ((err = stat->on_video_frames(req, (int)(rtrd->nb_video_frames() - nb_frames), rtrd->get_video_pts(), rtrd->get_recv_video_bytes() - recv_video_bytes)) != srs_success) {
             return srs_error_wrap(err, "rtmp: stat video frames");
         }
         nb_frames = rtrd->nb_video_frames();
+        recv_video_bytes = rtrd->get_recv_video_bytes();
 
-        if ((err = stat->on_audio_frames(req, rtrd->get_audio_pts())) != srs_success) {
+        if ((err = stat->on_audio_frames(req, rtrd->get_audio_pts(), rtrd->get_recv_audio_bytes() - recv_audio_bytes)) != srs_success) {
             return srs_error_wrap(err, "rtmp: stat audio frames");
         }
+        recv_audio_bytes = rtrd->get_recv_audio_bytes();
 
         // reportable
         if (pprint->can_print()) {

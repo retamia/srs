@@ -139,6 +139,8 @@ private:
     int64_t video_pts;
     // The audio pts we got.
     int64_t audio_pts;
+    uint64_t recv_video_bytes;
+    uint64_t recv_audio_bytes;
 
     // For mr(merged read),
     // @see https://github.com/ossrs/srs/issues/241
@@ -170,6 +172,8 @@ public:
     virtual uint64_t nb_video_frames();
     virtual int64_t get_video_pts();
     virtual int64_t get_audio_pts();
+    virtual uint64_t get_recv_video_bytes();
+    virtual uint64_t get_recv_audio_bytes();
     virtual srs_error_t error_code();
     virtual void set_cid(SrsContextId v);
     virtual SrsContextId get_cid();

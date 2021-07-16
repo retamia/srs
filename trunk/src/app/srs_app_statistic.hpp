@@ -42,12 +42,15 @@ public:
     virtual srs_error_t dumps(SrsJsonObject* obj);
 };
 
-struct SrsStatisticGopCacheInfo
+struct SrsStatisticPacketInfo
 {
 public:
     // stat pts, haven't thought of others yet
     int64_t video_pts;
     int64_t audio_pts;
+
+    uint64_t recv_video_bytes;
+    uint64_t recv_audio_bytes;
 };
 
 struct SrsStatisticStream
@@ -63,7 +66,7 @@ public:
     std::string publisher_id;
     int nb_clients;
     uint64_t nb_frames;
-    SrsStatisticGopCacheInfo *gop_cache_info;
+    SrsStatisticPacketInfo *packet_info;
 
 public:
     // The stream total kbps.
@@ -160,9 +163,9 @@ public:
         SrsAudioChannels asound_type, SrsAacObjectType aac_object);
     // When got videos, update the frames.
     // We only stat the total number of video frames.
-    virtual srs_error_t on_video_frames(SrsRequest* req, int nb_frames, int64_t pts);
+    virtual srs_error_t on_video_frames(SrsRequest* req, int nb_frames, int64_t pts, uint64_t bytes);
 
-    virtual srs_error_t on_audio_frames(SrsRequest *req, int64_t pts);
+    virtual srs_error_t on_audio_frames(SrsRequest *req, int64_t pts, uint64_t bytes);
     // When publish stream.
     // @param req the request object of publish connection.
     // @param publisher_id The id of publish connection.

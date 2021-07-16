@@ -101,14 +101,18 @@ SrsStatisticStream::SrsStatisticStream()
     nb_clients = 0;
     nb_frames = 0;
 
-    gop_cache_info = new SrsStatisticGopCacheInfo();
+    packet_info = new SrsStatisticPacketInfo();
+    packet_info->recv_video_bytes = 0;
+    packet_info->recv_audio_bytes = 0;
+    packet_info->audio_pts = 0;
+    packet_info->video_pts = 0;
 }
 
 SrsStatisticStream::~SrsStatisticStream()
 {
     srs_freep(kbps);
     srs_freep(clk);
-    srs_freep(gop_cache_info);
+    srs_freep(packet_info);
 }
 
 srs_error_t SrsStatisticStream::dumps(SrsJsonObject* obj)
@@ -122,10 +126,12 @@ srs_error_t SrsStatisticStream::dumps(SrsJsonObject* obj)
     obj->set("live_ms", SrsJsonAny::integer(srsu2ms(srs_get_system_time())));
     obj->set("clients", SrsJsonAny::integer(nb_clients));
     obj->set("frames", SrsJsonAny::integer(nb_frames));
-    obj->set("video_pts", SrsJsonAny::integer(gop_cache_info->video_pts));
-    obj->set("audio_pts", SrsJsonAny::integer(gop_cache_info->audio_pts));
+    obj->set("video_pts", SrsJsonAny::integer(packet_info->video_pts));
+    obj->set("audio_pts", SrsJsonAny::integer(packet_info->audio_pts));
     obj->set("send_bytes", SrsJsonAny::integer(kbps->get_send_bytes()));
     obj->set("recv_bytes", SrsJsonAny::integer(kbps->get_recv_bytes()));
+    obj->set("recv_video_bytes", SrsJsonAny::integer(packet_info->recv_video_bytes));
+    obj->set("recv_audio_bytes", SrsJsonAny::integer(packet_info->recv_audio_bytes));
     
     SrsJsonObject* okbps = SrsJsonAny::object();
     obj->set("kbps", okbps);
@@ -343,7 +349,7 @@ srs_error_t SrsStatistic::on_audio_info(SrsRequest* req, SrsAudioCodecId acodec,
     return err;
 }
 
-srs_error_t SrsStatistic::on_video_frames(SrsRequest* req, int nb_frames, int64_t pts)
+srs_error_t SrsStatistic::on_video_frames(SrsRequest* req, int nb_frames, int64_t pts, uint64_t bytes)
 {
     srs_error_t err = srs_success;
     
@@ -351,18 +357,20 @@ srs_error_t SrsStatistic::on_video_frames(SrsRequest* req, int nb_frames, int64_
     SrsStatisticStream* stream = create_stream(vhost, req);
     
     stream->nb_frames += nb_frames;
-    stream->gop_cache_info->video_pts = pts;
+    stream->packet_info->video_pts = pts;
+    stream->packet_info->recv_video_bytes += bytes;
     
     return err;
 }
 
-srs_error_t  SrsStatistic::on_audio_frames(SrsRequest *req, int64_t pts) {
+srs_error_t  SrsStatistic::on_audio_frames(SrsRequest *req, int64_t pts, uint64_t bytes) {
     srs_error_t err = srs_success;
 
     SrsStatisticVhost* vhost = create_vhost(req);
     SrsStatisticStream* stream = create_stream(vhost, req);
 
-    stream->gop_cache_info->audio_pts = pts;
+    stream->packet_info->audio_pts = pts;
+    stream->packet_info->recv_audio_bytes += bytes;
 
     return err;
 }

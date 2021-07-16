@@ -272,7 +272,13 @@ SrsPublishRecvThread::SrsPublishRecvThread(SrsRtmpServer* rtmp_sdk, SrsRequest* 
     nn_msgs_for_yield_ = 0;
     recv_error = srs_success;
     _nb_msgs = 0;
+
     video_frames = 0;
+    video_pts = 0;
+    audio_pts = 0;
+    recv_audio_bytes = 0;
+    recv_video_bytes = 0;
+
     error = srs_cond_new();
 
     req = _req;
@@ -327,6 +333,14 @@ int64_t SrsPublishRecvThread::get_audio_pts() {
     return audio_pts;
 }
 
+uint64_t SrsPublishRecvThread::get_recv_video_bytes() {
+    return recv_video_bytes;
+}
+
+uint64_t SrsPublishRecvThread::get_recv_audio_bytes() {
+    return recv_audio_bytes;
+}
+
 srs_error_t SrsPublishRecvThread::error_code()
 {
     return srs_error_copy(recv_error);
@@ -375,10 +389,12 @@ srs_error_t SrsPublishRecvThread::consume(SrsCommonMessage* msg)
     if (msg->header.is_video()) {
         video_pts = msg->header.timestamp;
         video_frames++;
+        recv_video_bytes += msg->header.payload_length;
     }
 
     if (msg->header.is_audio()) {
         audio_pts = msg->header.timestamp;
+        recv_audio_bytes += msg->header.payload_length;
     }
     
     // log to show the time of recv thread.
