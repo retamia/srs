@@ -100,12 +100,15 @@ SrsStatisticStream::SrsStatisticStream()
     
     nb_clients = 0;
     nb_frames = 0;
+
+    gop_cache_info = new SrsStatisticGopCacheInfo();
 }
 
 SrsStatisticStream::~SrsStatisticStream()
 {
     srs_freep(kbps);
     srs_freep(clk);
+    srs_freep(gop_cache_info);
 }
 
 srs_error_t SrsStatisticStream::dumps(SrsJsonObject* obj)
@@ -119,6 +122,8 @@ srs_error_t SrsStatisticStream::dumps(SrsJsonObject* obj)
     obj->set("live_ms", SrsJsonAny::integer(srsu2ms(srs_get_system_time())));
     obj->set("clients", SrsJsonAny::integer(nb_clients));
     obj->set("frames", SrsJsonAny::integer(nb_frames));
+    obj->set("video_pts", SrsJsonAny::integer(gop_cache_info->video_pts));
+    obj->set("audio_pts", SrsJsonAny::integer(gop_cache_info->audio_pts));
     obj->set("send_bytes", SrsJsonAny::integer(kbps->get_send_bytes()));
     obj->set("recv_bytes", SrsJsonAny::integer(kbps->get_recv_bytes()));
     
@@ -264,7 +269,7 @@ SrsStatistic* SrsStatistic::instance()
     return _instance;
 }
 
-SrsStatisticVhost* SrsStatistic::find_vhost_by_id(std::string vid)
+SrsStatisticVhost* SrsStatistic::find_vhost_by_id(const string &vid)
 {
     std::map<string, SrsStatisticVhost*>::iterator it;
     if ((it = vhosts.find(vid)) != vhosts.end()) {
@@ -273,7 +278,7 @@ SrsStatisticVhost* SrsStatistic::find_vhost_by_id(std::string vid)
     return NULL;
 }
 
-SrsStatisticVhost* SrsStatistic::find_vhost_by_name(string name)
+SrsStatisticVhost* SrsStatistic::find_vhost_by_name(const string &name)
 {
     if (rvhosts.empty()) {
         return NULL;
@@ -286,7 +291,7 @@ SrsStatisticVhost* SrsStatistic::find_vhost_by_name(string name)
     return NULL;
 }
 
-SrsStatisticStream* SrsStatistic::find_stream(string sid)
+SrsStatisticStream* SrsStatistic::find_stream(const string &sid)
 {
     std::map<std::string, SrsStatisticStream*>::iterator it;
     if ((it = streams.find(sid)) != streams.end()) {
@@ -295,7 +300,7 @@ SrsStatisticStream* SrsStatistic::find_stream(string sid)
     return NULL;
 }
 
-SrsStatisticClient* SrsStatistic::find_client(string client_id)
+SrsStatisticClient* SrsStatistic::find_client(const string &client_id)
 {
     std::map<std::string, SrsStatisticClient*>::iterator it;
     if ((it = clients.find(client_id)) != clients.end()) {
@@ -338,7 +343,7 @@ srs_error_t SrsStatistic::on_audio_info(SrsRequest* req, SrsAudioCodecId acodec,
     return err;
 }
 
-srs_error_t SrsStatistic::on_video_frames(SrsRequest* req, int nb_frames)
+srs_error_t SrsStatistic::on_video_frames(SrsRequest* req, int nb_frames, int64_t pts)
 {
     srs_error_t err = srs_success;
     
@@ -346,7 +351,19 @@ srs_error_t SrsStatistic::on_video_frames(SrsRequest* req, int nb_frames)
     SrsStatisticStream* stream = create_stream(vhost, req);
     
     stream->nb_frames += nb_frames;
+    stream->gop_cache_info->video_pts = pts;
     
+    return err;
+}
+
+srs_error_t  SrsStatistic::on_audio_frames(SrsRequest *req, int64_t pts) {
+    srs_error_t err = srs_success;
+
+    SrsStatisticVhost* vhost = create_vhost(req);
+    SrsStatisticStream* stream = create_stream(vhost, req);
+
+    stream->gop_cache_info->audio_pts = pts;
+
     return err;
 }
 

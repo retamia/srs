@@ -135,6 +135,11 @@ private:
     int64_t _nb_msgs;
     // The video frames we got.
     uint64_t video_frames;
+    // The video pts we got.
+    int64_t video_pts;
+    // The audio pts we got.
+    int64_t audio_pts;
+
     // For mr(merged read),
     // @see https://github.com/ossrs/srs/issues/241
     bool mr;
@@ -163,6 +168,8 @@ public:
     virtual srs_error_t wait(srs_utime_t tm);
     virtual int64_t nb_msgs();
     virtual uint64_t nb_video_frames();
+    virtual int64_t get_video_pts();
+    virtual int64_t get_audio_pts();
     virtual srs_error_t error_code();
     virtual void set_cid(SrsContextId v);
     virtual SrsContextId get_cid();

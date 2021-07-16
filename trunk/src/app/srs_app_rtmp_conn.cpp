@@ -918,10 +918,14 @@ srs_error_t SrsRtmpConn::do_publishing(SrsLiveSource* source, SrsPublishRecvThre
         // Update the stat for video fps.
         // @remark https://github.com/ossrs/srs/issues/851
         SrsStatistic* stat = SrsStatistic::instance();
-        if ((err = stat->on_video_frames(req, (int)(rtrd->nb_video_frames() - nb_frames))) != srs_success) {
+        if ((err = stat->on_video_frames(req, (int)(rtrd->nb_video_frames() - nb_frames), rtrd->get_video_pts())) != srs_success) {
             return srs_error_wrap(err, "rtmp: stat video frames");
         }
         nb_frames = rtrd->nb_video_frames();
+
+        if ((err = stat->on_audio_frames(req, rtrd->get_audio_pts())) != srs_success) {
+            return srs_error_wrap(err, "rtmp: stat audio frames");
+        }
 
         // reportable
         if (pprint->can_print()) {

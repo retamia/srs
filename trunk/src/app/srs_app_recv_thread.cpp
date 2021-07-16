@@ -319,6 +319,14 @@ uint64_t SrsPublishRecvThread::nb_video_frames()
     return video_frames;
 }
 
+int64_t SrsPublishRecvThread::get_video_pts() {
+    return video_pts;
+}
+
+int64_t SrsPublishRecvThread::get_audio_pts() {
+    return audio_pts;
+}
+
 srs_error_t SrsPublishRecvThread::error_code()
 {
     return srs_error_copy(recv_error);
@@ -365,7 +373,12 @@ srs_error_t SrsPublishRecvThread::consume(SrsCommonMessage* msg)
     _nb_msgs++;
     
     if (msg->header.is_video()) {
+        video_pts = msg->header.timestamp;
         video_frames++;
+    }
+
+    if (msg->header.is_audio()) {
+        audio_pts = msg->header.timestamp;
     }
     
     // log to show the time of recv thread.

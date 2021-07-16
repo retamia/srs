@@ -42,6 +42,14 @@ public:
     virtual srs_error_t dumps(SrsJsonObject* obj);
 };
 
+struct SrsStatisticGopCacheInfo
+{
+public:
+    // stat pts, haven't thought of others yet
+    int64_t video_pts;
+    int64_t audio_pts;
+};
+
 struct SrsStatisticStream
 {
 public:
@@ -55,6 +63,8 @@ public:
     std::string publisher_id;
     int nb_clients;
     uint64_t nb_frames;
+    SrsStatisticGopCacheInfo *gop_cache_info;
+
 public:
     // The stream total kbps.
     SrsKbps* kbps;
@@ -137,10 +147,10 @@ private:
 public:
     static SrsStatistic* instance();
 public:
-    virtual SrsStatisticVhost* find_vhost_by_id(std::string vid);
-    virtual SrsStatisticVhost* find_vhost_by_name(std::string name);
-    virtual SrsStatisticStream* find_stream(std::string sid);
-    virtual SrsStatisticClient* find_client(std::string client_id);
+    virtual SrsStatisticVhost* find_vhost_by_id(const std::string &vid);
+    virtual SrsStatisticVhost* find_vhost_by_name(const std::string &name);
+    virtual SrsStatisticStream* find_stream(const std::string &sid);
+    virtual SrsStatisticClient* find_client(const std::string &client_id);
 public:
     // When got video info for stream.
     virtual srs_error_t on_video_info(SrsRequest* req, SrsVideoCodecId vcodec, SrsAvcProfile avc_profile,
@@ -150,7 +160,9 @@ public:
         SrsAudioChannels asound_type, SrsAacObjectType aac_object);
     // When got videos, update the frames.
     // We only stat the total number of video frames.
-    virtual srs_error_t on_video_frames(SrsRequest* req, int nb_frames);
+    virtual srs_error_t on_video_frames(SrsRequest* req, int nb_frames, int64_t pts);
+
+    virtual srs_error_t on_audio_frames(SrsRequest *req, int64_t pts);
     // When publish stream.
     // @param req the request object of publish connection.
     // @param publisher_id The id of publish connection.
