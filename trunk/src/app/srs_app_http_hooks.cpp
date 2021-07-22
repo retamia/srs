@@ -158,6 +158,7 @@ void SrsHttpHooks::on_unpublish(string url, SrsRequest* req)
     obj->set("app", SrsJsonAny::str(req->app.c_str()));
     obj->set("stream", SrsJsonAny::str(req->stream.c_str()));
     obj->set("param", SrsJsonAny::str(req->param.c_str()));
+    obj->set("tcUrl", SrsJsonAny::str(req->tcUrl.c_str()));
     
     std::string data = obj->dumps();
     std::string res;
