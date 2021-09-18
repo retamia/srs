@@ -233,6 +233,7 @@ public:
 public:
     // Whether current hls muxer is pure audio mode.
     virtual bool pure_audio();
+    virtual bool low_latency();
     virtual srs_error_t flush_audio(SrsTsMessageCache* cache);
     virtual srs_error_t flush_video(SrsTsMessageCache* cache);
     virtual srs_error_t flush_audio_part(SrsTsMessageCache* part_cache);

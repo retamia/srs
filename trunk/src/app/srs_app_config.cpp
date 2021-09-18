@@ -7141,6 +7141,23 @@ bool SrsConfig::get_hls_wait_keyframe(string vhost)
     return SRS_CONF_PERFER_TRUE(conf->arg0());
 }
 
+bool SrsConfig::get_hls_low_latency_enabled(const string &vhost)
+{
+    static bool DEFAULT = false;
+
+    SrsConfDirective* conf = get_hls(vhost);
+    if (!conf) {
+        return DEFAULT;
+    }
+
+    conf = conf->get("hls_low_latency");
+    if (!conf || conf->arg0().empty()) {
+        return DEFAULT;
+    }
+
+    return SRS_CONF_PERFER_TRUE(conf->arg0());
+}
+
 bool SrsConfig::get_hls_keys(string vhost)
 {
     static bool DEFAULT = false;

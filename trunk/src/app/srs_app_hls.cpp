@@ -647,6 +647,11 @@ bool SrsHlsMuxer::pure_audio()
     return current && current->tscw && current->tscw->video_codec() == SrsVideoCodecIdDisabled;
 }
 
+bool SrsHlsMuxer::low_latency()
+{
+    return hls_low_latency;
+}
+
 srs_error_t SrsHlsMuxer::flush_audio(SrsTsMessageCache* cache)
 {
     srs_error_t err = srs_success;
@@ -1133,7 +1138,7 @@ srs_error_t SrsHlsController::on_publish(SrsRequest* req)
     std::string ts_file = _srs_config->get_hls_ts_file(vhost);
     bool cleanup = _srs_config->get_hls_cleanup(vhost);
     bool wait_keyframe = _srs_config->get_hls_wait_keyframe(vhost);
-    bool hls_low_latency = true; // _srs_config->get_hls_low_latency(vhost);
+    bool hls_low_latency = _srs_config->get_hls_low_latency_enabled(vhost);
     // the audio overflow, for pure audio to reap segment.
     double hls_aof_ratio = _srs_config->get_hls_aof_ratio(vhost);
     // whether use floor(timestamp/hls_fragment) for variable timestamp
@@ -1164,8 +1169,10 @@ srs_error_t SrsHlsController::on_publish(SrsRequest* req)
         return srs_error_wrap(err, "hls: segment open");
     }
 
-    if ((err = muxer->segment_part_open()) != srs_success) {
-        return srs_error_wrap(err, "hls: segment part open");
+    if (hls_low_latency) {
+        if ((err = muxer->segment_part_open()) != srs_success) {
+            return srs_error_wrap(err, "hls: segment part open");
+        }
     }
 
     // This config item is used in SrsHls, we just log its value here.
@@ -1186,8 +1193,14 @@ srs_error_t SrsHlsController::on_unpublish()
         return srs_error_wrap(err, "hls: flush audio");
     }
 
-    if ((err = muxer->segment_part_close()) != srs_success) {
-        return srs_error_wrap(err, "hls: segment part close");
+    if (muxer->low_latency()) {
+        if ((err = muxer->flush_audio_part(part_tsmc)) != srs_success) {
+            return srs_error_wrap(err, "hls: flush audio part");
+        }
+
+        if ((err = muxer->segment_part_close()) != srs_success) {
+            return srs_error_wrap(err, "hls: segment part close");
+        }
     }
 
     if ((err = muxer->segment_close()) != srs_success) {
@@ -1215,22 +1228,24 @@ srs_error_t SrsHlsController::on_sequence_header()
 srs_error_t SrsHlsController::write_audio(SrsAudioFrame* frame, int64_t pts)
 {
     srs_error_t err = srs_success;
-    
-    // write audio to cache.
-    if ((err = part_tsmc->cache_audio(frame, pts)) != srs_success) {
-        return srs_error_wrap(err, "hls: cache audio part");
-    }
 
     if ((err = tsmc->cache_audio(frame, pts)) != srs_success) {
         return srs_error_wrap(err, "hls: cache audio");
     }
 
-    if (muxer->is_segment_part_overflow()) {
-        if ((err = reap_segment_part()) != srs_success) {
-            return srs_error_wrap(err, "hls: reap segment part");
+    if (muxer->low_latency()) {
+        // write audio to cache.
+        if ((err = part_tsmc->cache_audio(frame, pts)) != srs_success) {
+            return srs_error_wrap(err, "hls: cache audio part");
+        }
+
+        if (muxer->is_segment_part_overflow()) {
+            if ((err = reap_segment_part()) != srs_success) {
+                return srs_error_wrap(err, "hls: reap segment part");
+            }
         }
     }
-    
+
     // reap when current source is pure audio.
     // it maybe changed when stream info changed,
     // for example, pure audio when start, audio/video when publishing,
@@ -1253,8 +1268,10 @@ srs_error_t SrsHlsController::write_audio(SrsAudioFrame* frame, int64_t pts)
         }
     }
 
-    if ((err = muxer->flush_audio_part(part_tsmc)) != srs_success) {
-        return srs_error_wrap(err, "hls: flush audio part");
+    if (muxer->low_latency()) {
+        if ((err = muxer->flush_audio_part(part_tsmc)) != srs_success) {
+            return srs_error_wrap(err, "hls: flush audio part");
+        }
     }
     
     // directly write the audio frame by frame to ts,
@@ -1274,17 +1291,19 @@ srs_error_t SrsHlsController::write_video(SrsVideoFrame* frame, int64_t dts)
     
     // write video to cache.
 
-    if ((err = part_tsmc->cache_video(frame, dts)) != srs_success) {
-        return srs_error_wrap(err, "hls: cache video part");
-    }
-
     if ((err = tsmc->cache_video(frame, dts)) != srs_success) {
         return srs_error_wrap(err, "hls: cache video");
     }
 
-    if (muxer->is_segment_part_overflow()) {
-        if ((err = reap_segment_part()) != srs_success) {
-            return srs_error_wrap(err, "hls: reap segment part");
+    if (muxer->low_latency()) {
+        if ((err = part_tsmc->cache_video(frame, dts)) != srs_success) {
+            return srs_error_wrap(err, "hls: cache video part");
+        }
+
+        if (muxer->is_segment_part_overflow()) {
+            if ((err = reap_segment_part()) != srs_success) {
+                return srs_error_wrap(err, "hls: reap segment part");
+            }
         }
     }
     
@@ -1301,8 +1320,10 @@ srs_error_t SrsHlsController::write_video(SrsVideoFrame* frame, int64_t dts)
         }
     }
 
-    if ((err = muxer->flush_video_part(part_tsmc)) != srs_success) {
-        return srs_error_wrap(err, "hls: flush video part");
+    if (muxer->low_latency()) {
+        if ((err = muxer->flush_video_part(part_tsmc)) != srs_success) {
+            return srs_error_wrap(err, "hls: flush video part");
+        }
     }
     
     // flush video when got one
@@ -1349,8 +1370,10 @@ srs_error_t SrsHlsController::reap_segment()
     // TODO: flush audio before or after segment?
     // TODO: fresh segment begin with audio or video?
 
-    if ((err = muxer->segment_part_close()) != srs_success) {
-        return srs_error_wrap(err, "hls: segment part close");
+    if (muxer->low_latency()) {
+        if ((err = muxer->segment_part_close()) != srs_success) {
+            return srs_error_wrap(err, "hls: segment part close");
+        }
     }
 
     // close current ts.
@@ -1370,16 +1393,18 @@ srs_error_t SrsHlsController::reap_segment()
         return srs_error_wrap(err, "hls: segment open");
     }
 
-    if((err = muxer->segment_part_open()) != srs_success) {
-        return srs_error_wrap(err, "hls: segment part open");
-    }
+    if (muxer->low_latency()) {
+        if((err = muxer->segment_part_open()) != srs_success) {
+            return srs_error_wrap(err, "hls: segment part open");
+        }
 
-    if ((err = muxer->flush_video_part(part_tsmc)) != srs_success) {
-        return srs_error_wrap(err, "hls: flush video part");
-    }
+        if ((err = muxer->flush_video_part(part_tsmc)) != srs_success) {
+            return srs_error_wrap(err, "hls: flush video part");
+        }
 
-    if ((err = muxer->flush_audio_part(part_tsmc)) != srs_success) {
-        return srs_error_wrap(err, "hls: flush audio part");
+        if ((err = muxer->flush_audio_part(part_tsmc)) != srs_success) {
+            return srs_error_wrap(err, "hls: flush audio part");
+        }
     }
     
     // segment open, flush video first.
