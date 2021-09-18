@@ -93,6 +93,21 @@ void SrsHlsSegment::dispose()
     parts.clear();
 }
 
+srs_error_t SrsHlsSegment::unlink_file()
+{
+    srs_error_t err = srs_success;
+    std::vector<SrsHlsPartialSegment *>::iterator it;
+
+    for (it = parts.begin(); it != parts.end(); ++it) {
+        SrsHlsPartialSegment* part = *it;
+        if ((err = part->unlink_file()) != srs_success) {
+            return err;
+        }
+    }
+
+    return SrsFragment::unlink_file();
+}
+
 srs_error_t SrsHlsSegment::add_new_segment_part(SrsTsContext* c)
 {
     if (part_tscw == NULL) {
@@ -345,7 +360,7 @@ srs_error_t SrsHlsMuxer::on_unpublish()
 
 srs_error_t SrsHlsMuxer::update_config(SrsRequest* r, string entry_prefix,
     string path, string m3u8_file, string ts_file, srs_utime_t fragment, srs_utime_t window,
-    bool ts_floor, double aof_ratio, bool cleanup, bool wait_keyframe, bool low_latency, bool keys,
+    bool ts_floor, double aof_ratio, bool cleanup, bool wait_keyframe, bool low_latency, srs_utime_t fragment_part, bool keys,
     int fragments_per_key, string key_file ,string key_file_path, string key_url)
 {
     srs_error_t err = srs_success;
@@ -358,7 +373,7 @@ srs_error_t SrsHlsMuxer::update_config(SrsRequest* r, string entry_prefix,
     hls_ts_file = ts_file;
     hls_fragment = fragment;
     // TODO 一个 ts part 先暂定500ms
-    hls_part_segment = 500 * SRS_UTIME_MILLISECONDS;
+    hls_part_segment = fragment_part;
     hls_low_latency = low_latency;
     hls_aof_ratio = aof_ratio;
     hls_ts_floor = ts_floor;
@@ -703,7 +718,7 @@ srs_error_t SrsHlsMuxer::flush_audio_part(SrsTsMessageCache *part_cache)
 
     part->append(part_cache->audio->pts / 90);
 
-    if ((err = part->tscw->write_video(part_cache->audio)) != srs_success) {
+    if ((err = part->tscw->write_audio(part_cache->audio)) != srs_success) {
         return srs_error_wrap(err, "hls: write part audio");
     }
 
@@ -976,11 +991,11 @@ srs_error_t SrsHlsMuxer::_refresh_m3u8(string m3u8_file)
     ss.setf(std::ios::fixed, std::ios::floatfield);
     if (hls_low_latency) {
         int total_duration = target_duration * segments->size();
-        int skip_until = 2;
-        ss  << "#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES"
-            /*<< ",CAN-SKIP-UNTIL=" << can_skip_until * target_duration*/
-            << ",PART-HOLD-BACK=" << 3.0f * part_segment_duration
-            << SRS_CONSTS_LF;
+//        int skip_until = 2;
+//        ss  << "#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES"
+//            /*<< ",CAN-SKIP-UNTIL=" << can_skip_until * target_duration*/
+//            << ",PART-HOLD-BACK=" << 3.0f * part_segment_duration
+//            << SRS_CONSTS_LF;
         ss << "#EXT-X-PART-INF:PART-TARGET=" << part_segment_duration << SRS_CONSTS_LF;
         //ss << "#EXT-X-SKIP:SKIPPED-SEGMENTS=" << (int) floor((total_duration - (skip_until * target_duration)) / target_duration) << SRS_CONSTS_LF;
     }
@@ -989,11 +1004,11 @@ srs_error_t SrsHlsMuxer::_refresh_m3u8(string m3u8_file)
     for (int i = 0; i < segments->size(); i++) {
         SrsHlsSegment* segment = dynamic_cast<SrsHlsSegment*>(segments->at(i));
         
-        if (segment->is_sequence_header()) {
-            // #EXT-X-DISCONTINUITY\n
-            ss << "#EXT-X-DISCONTINUITY" << SRS_CONSTS_LF;
-        }
-        
+//        if (segment->is_sequence_header()) {
+//            // #EXT-X-DISCONTINUITY\n
+//            ss << "#EXT-X-DISCONTINUITY" << SRS_CONSTS_LF;
+//        }
+//
         if(hls_keys && ((segment->sequence_no % hls_fragments_per_key) == 0)) {
             char hexiv[33];
             srs_data_to_hex(hexiv, segment->iv, 16);
@@ -1014,7 +1029,7 @@ srs_error_t SrsHlsMuxer::_refresh_m3u8(string m3u8_file)
         // "#EXTINF:4294967295.208,\n"
         ss.precision(3);
         ss.setf(std::ios::fixed, std::ios::floatfield);
-        ss << "#EXTINF:" << srsu2msi(segment->duration()) / 1000.0 << ", no desc" << SRS_CONSTS_LF;
+        ss << "#EXTINF:" << srsu2msi(segment->duration()) / 1000.0 << SRS_CONSTS_LF;
 
         if (i >= segments->size() - 3) {
             ss.precision(5);
@@ -1139,6 +1154,7 @@ srs_error_t SrsHlsController::on_publish(SrsRequest* req)
     bool cleanup = _srs_config->get_hls_cleanup(vhost);
     bool wait_keyframe = _srs_config->get_hls_wait_keyframe(vhost);
     bool hls_low_latency = _srs_config->get_hls_low_latency_enabled(vhost);
+    srs_utime_t hls_fragment_part = _srs_config->get_hls_fragment_part(vhost);
     // the audio overflow, for pure audio to reap segment.
     double hls_aof_ratio = _srs_config->get_hls_aof_ratio(vhost);
     // whether use floor(timestamp/hls_fragment) for variable timestamp
@@ -1160,7 +1176,7 @@ srs_error_t SrsHlsController::on_publish(SrsRequest* req)
     }
     
     if ((err = muxer->update_config(req, entry_prefix, path, m3u8_file, ts_file, hls_fragment,
-                                    hls_window, ts_floor, hls_aof_ratio, cleanup, wait_keyframe, hls_low_latency, hls_keys,hls_fragments_per_key,
+                                    hls_window, ts_floor, hls_aof_ratio, cleanup, wait_keyframe, hls_low_latency, hls_fragment_part, hls_keys,hls_fragments_per_key,
         hls_key_file, hls_key_file_path, hls_key_url)) != srs_success ) {
         return srs_error_wrap(err, "hls: update config");
     }

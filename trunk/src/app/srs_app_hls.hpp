@@ -80,6 +80,7 @@ private:
 public:
     SrsHlsSegment(SrsTsContext* c, SrsAudioCodecId ac, SrsVideoCodecId vc, SrsFileWriter* w);
     virtual ~SrsHlsSegment();
+    virtual srs_error_t unlink_file();
 public:
     void dispose();
     void config_cipher(unsigned char* key,unsigned char* iv);
@@ -207,7 +208,7 @@ public:
     virtual srs_error_t update_config(SrsRequest* r, std::string entry_prefix,
         std::string path, std::string m3u8_file, std::string ts_file,
         srs_utime_t fragment, srs_utime_t window, bool ts_floor, double aof_ratio,
-        bool cleanup, bool wait_keyframe, bool low_latency, bool keys, int fragments_per_key,
+        bool cleanup, bool wait_keyframe, bool low_latency, srs_utime_t fragment_part, bool keys, int fragments_per_key,
         std::string key_file, std::string key_file_path, std::string key_url);
     // Open a new segment(a new ts file)
     virtual srs_error_t segment_open();

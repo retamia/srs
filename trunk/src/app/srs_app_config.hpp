@@ -935,6 +935,8 @@ public:
     virtual bool get_hls_wait_keyframe(std::string vhost);
     // enable low latency hls
     virtual bool get_hls_low_latency_enabled(const std::string &vhost);
+    // low latency hls segment part duration
+    virtual srs_utime_t get_hls_fragment_part(const std::string &vhost);
     // encrypt ts or not
     virtual bool get_hls_keys(std::string vhost);
     // how many fragments can one key encrypted.
