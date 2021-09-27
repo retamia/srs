@@ -548,7 +548,6 @@ srs_error_t SrsHlsMuxer::segment_open()
 
     // reset the context for a new ts start.
     context->reset();
-    part_context->reset();
     
     return err;
 }
@@ -570,6 +569,8 @@ srs_error_t SrsHlsMuxer::segment_part_open()
     if ((err = part->writer->open(tmp_part_file)) != srs_success) {
         return err;
     }
+
+    part_context->reset();
 
     return err;
 }
@@ -634,7 +635,18 @@ bool SrsHlsMuxer::is_segment_part_overflow()
         return false;
     }
 
-    return current->parts[current->parts.size() - 1]->duration() >= hls_part_segment;
+    SrsHlsPartialSegment *part = current->parts[current->parts.size() - 1];
+
+    srs_utime_t total_part_duration = 0;
+    srs_utime_t current_part_duration = part->duration();
+
+    for (size_t i = 0; i < current->parts.size(); i++) {
+        total_part_duration += current->parts[i]->duration();
+    }
+
+    srs_utime_t deviation = hls_ts_floor? SRS_HLS_FLOOR_REAP_PERCENT * deviation_ts * hls_fragment : 0;
+
+    return current_part_duration >= hls_part_segment && hls_fragment + deviation - (total_part_duration - current_part_duration) >= hls_part_segment;
 }
 
 bool SrsHlsMuxer::wait_keyframe()
@@ -1254,12 +1266,6 @@ srs_error_t SrsHlsController::write_audio(SrsAudioFrame* frame, int64_t pts)
         if ((err = part_tsmc->cache_audio(frame, pts)) != srs_success) {
             return srs_error_wrap(err, "hls: cache audio part");
         }
-
-        if (muxer->is_segment_part_overflow()) {
-            if ((err = reap_segment_part()) != srs_success) {
-                return srs_error_wrap(err, "hls: reap segment part");
-            }
-        }
     }
 
     // reap when current source is pure audio.
@@ -1273,6 +1279,14 @@ srs_error_t SrsHlsController::write_audio(SrsAudioFrame* frame, int64_t pts)
     if (tsmc->audio && muxer->is_segment_absolutely_overflow()) {
         if ((err = reap_segment()) != srs_success) {
             return srs_error_wrap(err, "hls: reap segment");
+        }
+    }
+
+    if (muxer->low_latency()) {
+        if (muxer->is_segment_part_overflow()) {
+            if ((err = reap_segment_part()) != srs_success) {
+                return srs_error_wrap(err, "hls: reap segment part");
+            }
         }
     }
     
@@ -1332,6 +1346,14 @@ srs_error_t SrsHlsController::write_video(SrsVideoFrame* frame, int64_t dts)
             // reap the segment, which will also flush the video.
             if ((err = reap_segment()) != srs_success) {
                 return srs_error_wrap(err, "hls: reap segment");
+            }
+        }
+    }
+
+    if (muxer->low_latency()) {
+        if (muxer->is_segment_part_overflow()) {
+            if ((err = reap_segment_part()) != srs_success) {
+                return srs_error_wrap(err, "hls: reap segment part");
             }
         }
     }
