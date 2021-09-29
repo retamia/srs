@@ -570,6 +570,7 @@ srs_error_t SrsHlsMuxer::segment_part_open()
         return err;
     }
 
+    context->reset();
     part_context->reset();
 
     return err;
