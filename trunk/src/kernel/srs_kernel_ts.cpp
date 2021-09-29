@@ -75,6 +75,7 @@ SrsTsMessage::SrsTsMessage(SrsTsChannel* c, SrsTsPacket* p)
     PES_packet_length = 0;
     payload = new SrsSimpleStream();
     is_discontinuity = false;
+    has_keyframe = false;
     
     start_pts = 0;
     write_pcr = false;
@@ -2784,6 +2785,10 @@ srs_error_t SrsTsMessageCache::cache_video(SrsVideoFrame* frame, int64_t dts)
         video = new SrsTsMessage();
         video->write_pcr = (frame->frame_type == SrsVideoAvcFrameTypeKeyFrame);
         video->start_pts = dts;
+    }
+
+    if (frame->frame_type == SrsVideoAvcFrameTypeKeyFrame) {
+        video->has_keyframe = true;
     }
     
     video->dts = dts;

@@ -33,6 +33,20 @@ class SrsTsMessageCache;
 class SrsHlsSegment;
 class SrsTsContext;
 
+class SrsHlsPartialSegment: public SrsFragment
+{
+public:
+    std::string uri;
+    SrsFileWriter *writer;
+    SrsTsContextWriter *tscw;
+
+    bool has_keyframe;
+
+public:
+    SrsHlsPartialSegment(SrsTsContext *c, SrsAudioCodecId ac, SrsVideoCodecId vc, SrsFileWriter *writer);
+    virtual ~SrsHlsPartialSegment();
+};
+
 // The wrapper of m3u8 segment from specification:
 //
 // 3.3.2.  EXTINF
@@ -42,21 +56,36 @@ class SrsHlsSegment : public SrsFragment
 public:
     // sequence number in m3u8.
     int sequence_no;
+
+    // partial segment;
+    std::vector<SrsHlsPartialSegment*> parts;
+    SrsFileWriter *part_writer;
+    SrsTsContextWriter *part_tscw;
+
     // ts uri in m3u8.
     std::string uri;
     // The underlayer file writer.
     SrsFileWriter* writer;
     // The TS context writer to write TS to file.
     SrsTsContextWriter* tscw;
+
     // Will be saved in m3u8 file.
     unsigned char iv[16];
     // The full key path.
     std::string keypath;
+private:
+    SrsAudioCodecId ac;
+    SrsVideoCodecId vc;
+
 public:
     SrsHlsSegment(SrsTsContext* c, SrsAudioCodecId ac, SrsVideoCodecId vc, SrsFileWriter* w);
     virtual ~SrsHlsSegment();
+    virtual srs_error_t unlink_file();
 public:
+    void dispose();
     void config_cipher(unsigned char* key,unsigned char* iv);
+    srs_error_t add_new_segment_part(SrsTsContext* c);
+
 };
 
 // The hls async call: on_hls
@@ -111,10 +140,12 @@ private:
     std::string hls_ts_file;
     bool hls_cleanup;
     bool hls_wait_keyframe;
+    bool hls_low_latency;
     std::string m3u8_dir;
     double hls_aof_ratio;
     // TODO: FIXME: Use TBN 1000.
     srs_utime_t hls_fragment;
+    srs_utime_t hls_part_segment;
     srs_utime_t hls_window;
     SrsAsyncCallWorker* async;
 private:
@@ -154,7 +185,9 @@ private:
     SrsHlsSegment* current;
     // The ts context, to keep cc continous between ts.
     // @see https://github.com/ossrs/srs/issues/375
-    SrsTsContext* context;
+    SrsTsContext *context;
+
+    SrsTsContext *part_context;
 public:
     SrsHlsMuxer();
     virtual ~SrsHlsMuxer();
@@ -175,14 +208,23 @@ public:
     virtual srs_error_t update_config(SrsRequest* r, std::string entry_prefix,
         std::string path, std::string m3u8_file, std::string ts_file,
         srs_utime_t fragment, srs_utime_t window, bool ts_floor, double aof_ratio,
-        bool cleanup, bool wait_keyframe, bool keys, int fragments_per_key,
+        bool cleanup, bool wait_keyframe, bool low_latency, srs_utime_t fragment_part, bool keys, int fragments_per_key,
         std::string key_file, std::string key_file_path, std::string key_url);
     // Open a new segment(a new ts file)
     virtual srs_error_t segment_open();
     virtual srs_error_t on_sequence_header();
+
+    virtual srs_error_t segment_part_open();
+    virtual srs_error_t segment_part_close();
+
     // Whether segment overflow,
     // that is whether the current segment duration>=(the segment in config)
     virtual bool is_segment_overflow();
+
+    // Whether segment part overflow
+    // this is whether the current segment part duration >= part in config
+    virtual bool is_segment_part_overflow();
+
     // Whether wait keyframe to reap the ts.
     virtual bool wait_keyframe();
     // Whether segment absolutely overflow, for pure audio to reap segment,
@@ -192,8 +234,11 @@ public:
 public:
     // Whether current hls muxer is pure audio mode.
     virtual bool pure_audio();
+    virtual bool low_latency();
     virtual srs_error_t flush_audio(SrsTsMessageCache* cache);
     virtual srs_error_t flush_video(SrsTsMessageCache* cache);
+    virtual srs_error_t flush_audio_part(SrsTsMessageCache* part_cache);
+    virtual srs_error_t flush_video_part(SrsTsMessageCache* part_cache);
     // Close segment(ts).
     virtual srs_error_t segment_close();
 private:
@@ -226,6 +271,8 @@ private:
     SrsHlsMuxer* muxer;
     // The TS cache
     SrsTsMessageCache* tsmc;
+
+    SrsTsMessageCache *part_tsmc;
 public:
     SrsHlsController();
     virtual ~SrsHlsController();
@@ -255,6 +302,8 @@ private:
     // then write the key frame to the new segment.
     // so, user must reap_segment then flush_video to hls muxer.
     virtual srs_error_t reap_segment();
+
+    virtual srs_error_t reap_segment_part();
 };
 
 // Transmux RTMP stream to HLS(m3u8 and ts).

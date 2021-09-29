@@ -3834,7 +3834,7 @@ srs_error_t SrsConfig::check_normal_config()
                         && m != "hls_storage" && m != "hls_mount" && m != "hls_td_ratio" && m != "hls_aof_ratio" && m != "hls_acodec" && m != "hls_vcodec"
                         && m != "hls_m3u8_file" && m != "hls_ts_file" && m != "hls_ts_floor" && m != "hls_cleanup" && m != "hls_nb_notify"
                         && m != "hls_wait_keyframe" && m != "hls_dispose" && m != "hls_keys" && m != "hls_fragments_per_key" && m != "hls_key_file"
-                        && m != "hls_key_file_path" && m != "hls_key_url" && m != "hls_dts_directly") {
+                        && m != "hls_key_file_path" && m != "hls_key_url" && m != "hls_dts_directly" && m != "hls_low_latency" && m != "hls_fragment_part") {
                         return srs_error_new(ERROR_SYSTEM_CONFIG_INVALID, "illegal vhost.hls.%s of %s", m.c_str(), vhost->arg0().c_str());
                     }
                     
@@ -7139,6 +7139,39 @@ bool SrsConfig::get_hls_wait_keyframe(string vhost)
     }
     
     return SRS_CONF_PERFER_TRUE(conf->arg0());
+}
+
+bool SrsConfig::get_hls_low_latency_enabled(const string &vhost)
+{
+    static bool DEFAULT = false;
+
+    SrsConfDirective* conf = get_hls(vhost);
+    if (!conf) {
+        return DEFAULT;
+    }
+
+    conf = conf->get("hls_low_latency");
+    if (!conf || conf->arg0().empty()) {
+        return DEFAULT;
+    }
+
+    return SRS_CONF_PERFER_TRUE(conf->arg0());
+}
+
+srs_utime_t SrsConfig::get_hls_fragment_part(const std::string &vhost) {
+    static srs_utime_t DEFAULT = (0.25f * SRS_UTIME_SECONDS);
+
+    SrsConfDirective* conf = get_hls(vhost);
+    if (!conf) {
+        return DEFAULT;
+    }
+
+    conf = conf->get("hls_fragment_part");
+    if (!conf || conf->arg0().empty()) {
+        return DEFAULT;
+    }
+
+    return srs_utime_t(::atof(conf->arg0().c_str()) * SRS_UTIME_SECONDS);
 }
 
 bool SrsConfig::get_hls_keys(string vhost)

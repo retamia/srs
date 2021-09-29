@@ -242,6 +242,7 @@ public:
     uint8_t continuity_counter;
     // The payload bytes.
     SrsSimpleStream* payload;
+    bool has_keyframe;
 public:
     SrsTsMessage(SrsTsChannel* c = NULL, SrsTsPacket* p = NULL);
     virtual ~SrsTsMessage();

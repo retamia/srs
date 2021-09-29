@@ -45,16 +45,93 @@ using namespace std;
 // reset the piece id when deviation overflow this.
 #define SRS_JUMP_WHEN_PIECE_DEVIATION 20
 
+SrsHlsPartialSegment::SrsHlsPartialSegment(SrsTsContext *c, SrsAudioCodecId ac, SrsVideoCodecId vc, SrsFileWriter *writer)
+{
+    this->writer = writer;
+    tscw = new SrsTsContextWriter(writer, c, ac, vc);
+    has_keyframe = false;
+}
+
+SrsHlsPartialSegment::~SrsHlsPartialSegment()
+{
+    srs_freep(tscw);
+}
+
 SrsHlsSegment::SrsHlsSegment(SrsTsContext* c, SrsAudioCodecId ac, SrsVideoCodecId vc, SrsFileWriter* w)
 {
     sequence_no = 0;
     writer = w;
+    this->vc = vc;
+    this->ac = ac;
     tscw = new SrsTsContextWriter(writer, c, ac, vc);
+
+    part_writer = new SrsFileWriter();
+    part_tscw = NULL;
 }
 
 SrsHlsSegment::~SrsHlsSegment()
 {
     srs_freep(tscw);
+    srs_freep(part_writer);
+    srs_freep(part_tscw);
+}
+
+void SrsHlsSegment::dispose()
+{
+    srs_error_t err = srs_success;
+    std::vector<SrsHlsPartialSegment *>::iterator it;
+
+    for (it = parts.begin(); it != parts.end(); ++it) {
+        SrsHlsPartialSegment* part = *it;
+        if ((err = part->unlink_file()) != srs_success) {
+            srs_warn("Unlink ts failed %s", srs_error_desc(err).c_str());
+            srs_freep(err);
+        }
+        srs_freep(part);
+    }
+
+    parts.clear();
+}
+
+srs_error_t SrsHlsSegment::unlink_file()
+{
+    srs_error_t err = srs_success;
+    std::vector<SrsHlsPartialSegment *>::iterator it;
+
+    for (it = parts.begin(); it != parts.end(); ++it) {
+        SrsHlsPartialSegment* part = *it;
+        if ((err = part->unlink_file()) != srs_success) {
+            return err;
+        }
+    }
+
+    return SrsFragment::unlink_file();
+}
+
+srs_error_t SrsHlsSegment::add_new_segment_part(SrsTsContext* c)
+{
+    if (part_tscw == NULL) {
+        part_tscw = new SrsTsContextWriter(part_writer, c, ac, vc);
+    }
+
+    srs_error_t err = srs_success;
+
+    // close last part writer
+    part_writer->close();
+    SrsHlsPartialSegment *part = new SrsHlsPartialSegment(c, ac, vc, part_writer);
+
+    std::stringstream part_ts;
+    std::stringstream part_uri;
+    size_t part_num = parts.size() + 1;
+
+    part_ts << fullpath() << "." << part_num << ".ts";
+    part->set_path(part_ts.str());
+
+    part_uri << uri << "." << part_num << ".ts";
+    part->uri = part_uri.str();
+
+    parts.push_back(part);
+    return err;
 }
 
 void SrsHlsSegment::config_cipher(unsigned char* key,unsigned char* iv)
@@ -175,10 +252,12 @@ SrsHlsMuxer::SrsHlsMuxer()
 {
     req = NULL;
     hls_fragment = hls_window = 0;
+    hls_part_segment = 0;
     hls_aof_ratio = 1.0;
     deviation_ts = 0;
     hls_cleanup = true;
     hls_wait_keyframe = true;
+    hls_low_latency = false;
     previous_floor_ts = 0;
     accept_floor_ts = 0;
     hls_ts_floor = false;
@@ -190,6 +269,7 @@ SrsHlsMuxer::SrsHlsMuxer()
     hls_fragments_per_key = 0;
     async = new SrsAsyncCallWorker();
     context = new SrsTsContext();
+    part_context = new SrsTsContext();
     segments = new SrsFragmentWindow();
     
     memset(key, 0, 16);
@@ -203,6 +283,7 @@ SrsHlsMuxer::~SrsHlsMuxer()
     srs_freep(req);
     srs_freep(async);
     srs_freep(context);
+    srs_freep(part_context);
     srs_freep(writer);
 }
 
@@ -211,8 +292,11 @@ void SrsHlsMuxer::dispose()
     srs_error_t err = srs_success;
     
     segments->dispose();
-    
+
     if (current) {
+
+        current->dispose();
+
         if ((err = current->unlink_tmpfile()) != srs_success) {
             srs_warn("Unlink tmp ts failed %s", srs_error_desc(err).c_str());
             srs_freep(err);
@@ -276,7 +360,7 @@ srs_error_t SrsHlsMuxer::on_unpublish()
 
 srs_error_t SrsHlsMuxer::update_config(SrsRequest* r, string entry_prefix,
     string path, string m3u8_file, string ts_file, srs_utime_t fragment, srs_utime_t window,
-    bool ts_floor, double aof_ratio, bool cleanup, bool wait_keyframe, bool keys,
+    bool ts_floor, double aof_ratio, bool cleanup, bool wait_keyframe, bool low_latency, srs_utime_t fragment_part, bool keys,
     int fragments_per_key, string key_file ,string key_file_path, string key_url)
 {
     srs_error_t err = srs_success;
@@ -288,6 +372,9 @@ srs_error_t SrsHlsMuxer::update_config(SrsRequest* r, string entry_prefix,
     hls_path = path;
     hls_ts_file = ts_file;
     hls_fragment = fragment;
+    // TODO 一个 ts part 先暂定500ms
+    hls_part_segment = fragment_part;
+    hls_low_latency = low_latency;
     hls_aof_ratio = aof_ratio;
     hls_ts_floor = ts_floor;
     hls_cleanup = cleanup;
@@ -465,6 +552,55 @@ srs_error_t SrsHlsMuxer::segment_open()
     return err;
 }
 
+srs_error_t SrsHlsMuxer::segment_part_open()
+{
+    srs_error_t err = srs_success;
+    // when segment part open, the current segment must not be NULL.
+    srs_assert(current);
+
+    // add ts part file.
+    if ((err = current->add_new_segment_part(part_context)) != srs_success) {
+        return srs_error_wrap(err, "open hls segment part");
+    }
+
+    SrsHlsPartialSegment *part = current->parts[current->parts.size() - 1];
+
+    std::string tmp_part_file = part->tmppath();
+    if ((err = part->writer->open(tmp_part_file)) != srs_success) {
+        return err;
+    }
+
+    context->reset();
+    part_context->reset();
+
+    return err;
+}
+
+srs_error_t SrsHlsMuxer::segment_part_close()
+{
+    srs_error_t err = srs_success;
+
+    if (!current) {
+        srs_warn("ignore the segment part close, for segment is not open.");
+        return err;
+    }
+
+    SrsHlsPartialSegment *part = current->parts[current->parts.size() - 1];
+    if (part && part->writer) {
+        part->writer->close();
+    }
+
+    srs_freep(part->tscw);
+
+    if ((err = part->rename()) != srs_success) {
+        return srs_error_wrap(err, "rename part");
+    }
+
+    err = refresh_m3u8();
+
+    return err;
+}
+
 srs_error_t SrsHlsMuxer::on_sequence_header()
 {
     srs_error_t err = srs_success;
@@ -492,6 +628,28 @@ bool SrsHlsMuxer::is_segment_overflow()
     return current->duration() >= hls_fragment + deviation;
 }
 
+bool SrsHlsMuxer::is_segment_part_overflow()
+{
+    srs_assert(current);
+
+    if (current->parts.empty()) {
+        return false;
+    }
+
+    SrsHlsPartialSegment *part = current->parts[current->parts.size() - 1];
+
+    srs_utime_t total_part_duration = 0;
+    srs_utime_t current_part_duration = part->duration();
+
+    for (size_t i = 0; i < current->parts.size(); i++) {
+        total_part_duration += current->parts[i]->duration();
+    }
+
+    srs_utime_t deviation = hls_ts_floor? SRS_HLS_FLOOR_REAP_PERCENT * deviation_ts * hls_fragment : 0;
+
+    return current_part_duration >= hls_part_segment && hls_fragment + deviation - (total_part_duration - current_part_duration) >= hls_part_segment;
+}
+
 bool SrsHlsMuxer::wait_keyframe()
 {
     return hls_wait_keyframe;
@@ -515,6 +673,11 @@ bool SrsHlsMuxer::is_segment_absolutely_overflow()
 bool SrsHlsMuxer::pure_audio()
 {
     return current && current->tscw && current->tscw->video_codec() == SrsVideoCodecIdDisabled;
+}
+
+bool SrsHlsMuxer::low_latency()
+{
+    return hls_low_latency;
 }
 
 srs_error_t SrsHlsMuxer::flush_audio(SrsTsMessageCache* cache)
@@ -544,6 +707,39 @@ srs_error_t SrsHlsMuxer::flush_audio(SrsTsMessageCache* cache)
     return err;
 }
 
+srs_error_t SrsHlsMuxer::flush_audio_part(SrsTsMessageCache *part_cache)
+{
+    srs_error_t err = srs_success;
+
+    if (!current) {
+        srs_warn("flush audio ignored, for segment is not open.");
+        return err;
+    }
+
+    SrsHlsPartialSegment *part = current->parts[current->parts.size() - 1];
+
+    if (!part) {
+        srs_warn("flush audio ignored, for segment part is not open.");
+        return err;
+    }
+
+    if (!part_cache->audio || part_cache->audio->payload->length() <= 0) {
+        return err;
+    }
+
+    srs_assert(part);
+
+    part->append(part_cache->audio->pts / 90);
+
+    if ((err = part->tscw->write_audio(part_cache->audio)) != srs_success) {
+        return srs_error_wrap(err, "hls: write part audio");
+    }
+
+    srs_freep(part_cache->audio);
+
+    return err;
+}
+
 srs_error_t SrsHlsMuxer::flush_video(SrsTsMessageCache* cache)
 {
     srs_error_t err = srs_success;
@@ -570,6 +766,41 @@ srs_error_t SrsHlsMuxer::flush_video(SrsTsMessageCache* cache)
     // write success, clear and free the msg
     srs_freep(cache->video);
     
+    return err;
+}
+
+srs_error_t SrsHlsMuxer::flush_video_part(SrsTsMessageCache *part_cache)
+{
+    srs_error_t err = srs_success;
+
+    if (!current) {
+        srs_warn("flush video ignored, for segment is not open.");
+        return err;
+    }
+
+    SrsHlsPartialSegment *part = current->parts[current->parts.size() - 1];
+
+    if (!part) {
+        srs_warn("flush video ignored, for segment part is not open.");
+        return err;
+    }
+
+    if (!part_cache->video || part_cache->video->payload->length() <= 0) {
+        return err;
+    }
+
+    part->append(part_cache->video->dts / 90);
+
+    if (part_cache->video->has_keyframe) {
+        part->has_keyframe = true;
+    }
+
+    if ((err = part->tscw->write_video(part_cache->video)) != srs_success) {
+        return srs_error_wrap(err, "hls: write part video");
+    }
+
+    srs_freep(part_cache->video);
+
     return err;
 }
 
@@ -738,7 +969,9 @@ srs_error_t SrsHlsMuxer::_refresh_m3u8(string m3u8_file)
     // #EXT-X-VERSION:3\n
     std::stringstream ss;
     ss << "#EXTM3U" << SRS_CONSTS_LF;
-    ss << "#EXT-X-VERSION:3" << SRS_CONSTS_LF;
+
+    int m3u8_version = hls_low_latency ? 6 : 3;
+    ss << "#EXT-X-VERSION:" << m3u8_version << SRS_CONSTS_LF;
     
     // #EXT-X-MEDIA-SEQUENCE:4294967295\n
     SrsHlsSegment* first = dynamic_cast<SrsHlsSegment*>(segments->first());
@@ -747,7 +980,7 @@ srs_error_t SrsHlsMuxer::_refresh_m3u8(string m3u8_file)
     }
 
     ss << "#EXT-X-MEDIA-SEQUENCE:" << first->sequence_no << SRS_CONSTS_LF;
-    
+
     // #EXT-X-TARGETDURATION:4294967295\n
     /**
      * @see hls-m3u8-draft-pantos-http-live-streaming-12.pdf, page 25
@@ -760,18 +993,35 @@ srs_error_t SrsHlsMuxer::_refresh_m3u8(string m3u8_file)
     // @see https://github.com/ossrs/srs/issues/304#issuecomment-74000081
     srs_utime_t max_duration = segments->max_duration();
     int target_duration = (int)ceil(srsu2msi(srs_max(max_duration, max_td)) / 1000.0);
-    
+    float part_segment_duration = srsu2msi(hls_part_segment) / 1000.0f;
+
+    int part_count = (int)(float(target_duration) / part_segment_duration);
+
     ss << "#EXT-X-TARGETDURATION:" << target_duration << SRS_CONSTS_LF;
+
+    int can_skip_until = 2;
+    ss.precision(5);
+    ss.setf(std::ios::fixed, std::ios::floatfield);
+    if (hls_low_latency) {
+        int total_duration = target_duration * segments->size();
+//        int skip_until = 2;
+//        ss  << "#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES"
+//            /*<< ",CAN-SKIP-UNTIL=" << can_skip_until * target_duration*/
+//            << ",PART-HOLD-BACK=" << 3.0f * part_segment_duration
+//            << SRS_CONSTS_LF;
+        ss << "#EXT-X-PART-INF:PART-TARGET=" << part_segment_duration << SRS_CONSTS_LF;
+        //ss << "#EXT-X-SKIP:SKIPPED-SEGMENTS=" << (int) floor((total_duration - (skip_until * target_duration)) / target_duration) << SRS_CONSTS_LF;
+    }
     
     // write all segments
     for (int i = 0; i < segments->size(); i++) {
         SrsHlsSegment* segment = dynamic_cast<SrsHlsSegment*>(segments->at(i));
         
-        if (segment->is_sequence_header()) {
-            // #EXT-X-DISCONTINUITY\n
-            ss << "#EXT-X-DISCONTINUITY" << SRS_CONSTS_LF;
-        }
-        
+//        if (segment->is_sequence_header()) {
+//            // #EXT-X-DISCONTINUITY\n
+//            ss << "#EXT-X-DISCONTINUITY" << SRS_CONSTS_LF;
+//        }
+//
         if(hls_keys && ((segment->sequence_no % hls_fragments_per_key) == 0)) {
             char hexiv[33];
             srs_data_to_hex(hexiv, segment->iv, 16);
@@ -788,12 +1038,27 @@ srs_error_t SrsHlsMuxer::_refresh_m3u8(string m3u8_file)
             
             ss << "#EXT-X-KEY:METHOD=AES-128,URI=" << "\"" << key_path << "\",IV=0x" << hexiv << SRS_CONSTS_LF;
         }
-        
+
         // "#EXTINF:4294967295.208,\n"
         ss.precision(3);
         ss.setf(std::ios::fixed, std::ios::floatfield);
-        ss << "#EXTINF:" << srsu2msi(segment->duration()) / 1000.0 << ", no desc" << SRS_CONSTS_LF;
-        
+        ss << "#EXTINF:" << srsu2msi(segment->duration()) / 1000.0 << SRS_CONSTS_LF;
+
+        if (i >= segments->size() - 3) {
+            ss.precision(5);
+            ss.setf(std::ios::fixed, std::ios::floatfield);
+            for (size_t part_i = 0; part_i < segment->parts.size(); part_i++) {
+                SrsHlsPartialSegment *part = segment->parts[part_i];
+                float part_duration = srsu2msi(part->duration()) / 1000.0f;
+                ss << "#EXT-X-PART:DURATION=" << part_duration;
+                if (part->has_keyframe) {
+                    ss << ",INDEPENDENT=YES";
+                }
+
+                ss << ",URI=" << part->uri << SRS_CONSTS_LF;
+            }
+        }
+
         // {file name}\n
         std::string seg_uri = segment->uri;
         if (true) {
@@ -803,6 +1068,26 @@ srs_error_t SrsHlsMuxer::_refresh_m3u8(string m3u8_file)
         }
         //ss << segment->uri << SRS_CONSTS_LF;
         ss << seg_uri << SRS_CONSTS_LF;
+    }
+
+    // write segment part
+    if (current && hls_low_latency) {
+        ss.precision(5);
+        ss.setf(std::ios::fixed, std::ios::floatfield);
+        for (size_t part_i = 0; part_i < current->parts.size(); part_i++) {
+            SrsHlsPartialSegment *part = current->parts[part_i];
+            float part_duration = srsu2msi(part->duration()) / 1000.0f;
+            ss << "#EXT-X-PART:DURATION=" << part_duration;
+            if (part->has_keyframe) {
+                ss << ",INDEPENDENT=YES";
+            }
+
+            ss << ",URI=" << part->uri << SRS_CONSTS_LF;
+        }
+
+        if (current->parts.size() < part_count) {
+            ss << "#EXT-X-PRELOAD-HINT:TYPE=PART,URI=" << current->uri << "." << current->parts.size() + 1 << ".ts" << SRS_CONSTS_LF;
+        }
     }
     
     // write m3u8 to writer.
@@ -817,12 +1102,14 @@ srs_error_t SrsHlsMuxer::_refresh_m3u8(string m3u8_file)
 SrsHlsController::SrsHlsController()
 {
     tsmc = new SrsTsMessageCache();
+    part_tsmc = new SrsTsMessageCache();
     muxer = new SrsHlsMuxer();
 }
 
 SrsHlsController::~SrsHlsController()
 {
     srs_freep(muxer);
+    srs_freep(part_tsmc);
     srs_freep(tsmc);
 }
 
@@ -879,6 +1166,8 @@ srs_error_t SrsHlsController::on_publish(SrsRequest* req)
     std::string ts_file = _srs_config->get_hls_ts_file(vhost);
     bool cleanup = _srs_config->get_hls_cleanup(vhost);
     bool wait_keyframe = _srs_config->get_hls_wait_keyframe(vhost);
+    bool hls_low_latency = _srs_config->get_hls_low_latency_enabled(vhost);
+    srs_utime_t hls_fragment_part = _srs_config->get_hls_fragment_part(vhost);
     // the audio overflow, for pure audio to reap segment.
     double hls_aof_ratio = _srs_config->get_hls_aof_ratio(vhost);
     // whether use floor(timestamp/hls_fragment) for variable timestamp
@@ -900,13 +1189,19 @@ srs_error_t SrsHlsController::on_publish(SrsRequest* req)
     }
     
     if ((err = muxer->update_config(req, entry_prefix, path, m3u8_file, ts_file, hls_fragment,
-        hls_window, ts_floor, hls_aof_ratio, cleanup, wait_keyframe,hls_keys,hls_fragments_per_key,
+                                    hls_window, ts_floor, hls_aof_ratio, cleanup, wait_keyframe, hls_low_latency, hls_fragment_part, hls_keys,hls_fragments_per_key,
         hls_key_file, hls_key_file_path, hls_key_url)) != srs_success ) {
         return srs_error_wrap(err, "hls: update config");
     }
     
     if ((err = muxer->segment_open()) != srs_success) {
         return srs_error_wrap(err, "hls: segment open");
+    }
+
+    if (hls_low_latency) {
+        if ((err = muxer->segment_part_open()) != srs_success) {
+            return srs_error_wrap(err, "hls: segment part open");
+        }
     }
 
     // This config item is used in SrsHls, we just log its value here.
@@ -926,7 +1221,17 @@ srs_error_t SrsHlsController::on_unpublish()
     if ((err = muxer->flush_audio(tsmc)) != srs_success) {
         return srs_error_wrap(err, "hls: flush audio");
     }
-    
+
+    if (muxer->low_latency()) {
+        if ((err = muxer->flush_audio_part(part_tsmc)) != srs_success) {
+            return srs_error_wrap(err, "hls: flush audio part");
+        }
+
+        if ((err = muxer->segment_part_close()) != srs_success) {
+            return srs_error_wrap(err, "hls: segment part close");
+        }
+    }
+
     if ((err = muxer->segment_close()) != srs_success) {
         return srs_error_wrap(err, "hls: segment close");
     }
@@ -952,12 +1257,18 @@ srs_error_t SrsHlsController::on_sequence_header()
 srs_error_t SrsHlsController::write_audio(SrsAudioFrame* frame, int64_t pts)
 {
     srs_error_t err = srs_success;
-    
-    // write audio to cache.
+
     if ((err = tsmc->cache_audio(frame, pts)) != srs_success) {
         return srs_error_wrap(err, "hls: cache audio");
     }
-    
+
+    if (muxer->low_latency()) {
+        // write audio to cache.
+        if ((err = part_tsmc->cache_audio(frame, pts)) != srs_success) {
+            return srs_error_wrap(err, "hls: cache audio part");
+        }
+    }
+
     // reap when current source is pure audio.
     // it maybe changed when stream info changed,
     // for example, pure audio when start, audio/video when publishing,
@@ -971,12 +1282,26 @@ srs_error_t SrsHlsController::write_audio(SrsAudioFrame* frame, int64_t pts)
             return srs_error_wrap(err, "hls: reap segment");
         }
     }
+
+    if (muxer->low_latency()) {
+        if (muxer->is_segment_part_overflow()) {
+            if ((err = reap_segment_part()) != srs_success) {
+                return srs_error_wrap(err, "hls: reap segment part");
+            }
+        }
+    }
     
     // for pure audio, aggregate some frame to one.
     // TODO: FIXME: Check whether it's necessary.
     if (muxer->pure_audio() && tsmc->audio) {
         if (pts - tsmc->audio->start_pts < SRS_CONSTS_HLS_PURE_AUDIO_AGGREGATE) {
             return err;
+        }
+    }
+
+    if (muxer->low_latency()) {
+        if ((err = muxer->flush_audio_part(part_tsmc)) != srs_success) {
+            return srs_error_wrap(err, "hls: flush audio part");
         }
     }
     
@@ -996,8 +1321,21 @@ srs_error_t SrsHlsController::write_video(SrsVideoFrame* frame, int64_t dts)
     srs_error_t err = srs_success;
     
     // write video to cache.
+
     if ((err = tsmc->cache_video(frame, dts)) != srs_success) {
         return srs_error_wrap(err, "hls: cache video");
+    }
+
+    if (muxer->low_latency()) {
+        if ((err = part_tsmc->cache_video(frame, dts)) != srs_success) {
+            return srs_error_wrap(err, "hls: cache video part");
+        }
+
+        if (muxer->is_segment_part_overflow()) {
+            if ((err = reap_segment_part()) != srs_success) {
+                return srs_error_wrap(err, "hls: reap segment part");
+            }
+        }
     }
     
     // when segment overflow, reap if possible.
@@ -1012,6 +1350,20 @@ srs_error_t SrsHlsController::write_video(SrsVideoFrame* frame, int64_t dts)
             }
         }
     }
+
+    if (muxer->low_latency()) {
+        if (muxer->is_segment_part_overflow()) {
+            if ((err = reap_segment_part()) != srs_success) {
+                return srs_error_wrap(err, "hls: reap segment part");
+            }
+        }
+    }
+
+    if (muxer->low_latency()) {
+        if ((err = muxer->flush_video_part(part_tsmc)) != srs_success) {
+            return srs_error_wrap(err, "hls: flush video part");
+        }
+    }
     
     // flush video when got one
     if ((err = muxer->flush_video(tsmc)) != srs_success) {
@@ -1021,13 +1373,48 @@ srs_error_t SrsHlsController::write_video(SrsVideoFrame* frame, int64_t dts)
     return err;
 }
 
+srs_error_t SrsHlsController::reap_segment_part()
+{
+    srs_error_t err = srs_success;
+
+    if ((err = muxer->segment_part_close()) != srs_success) {
+        srs_error_t err0 = muxer->segment_part_open();
+        if (err0 != srs_success) {
+            srs_warn("close segment part err %sf", srs_error_desc(err0).c_str());
+            srs_freep(err0);
+        }
+
+        return srs_error_wrap(err, "hls: segment part close");
+    }
+
+    if ((err = muxer->segment_part_open()) != srs_success) {
+        return srs_error_wrap(err, "hls: segment part open");
+    }
+
+    if ((err = muxer->flush_video_part(part_tsmc)) != srs_success) {
+        return srs_error_wrap(err, "hls: flush video part");
+    }
+
+    if ((err = muxer->flush_audio_part(part_tsmc)) != srs_success) {
+        return srs_error_wrap(err, "hls: flush audio part");
+    }
+
+    return err;
+}
+
 srs_error_t SrsHlsController::reap_segment()
 {
     srs_error_t err = srs_success;
     
     // TODO: flush audio before or after segment?
     // TODO: fresh segment begin with audio or video?
-    
+
+    if (muxer->low_latency()) {
+        if ((err = muxer->segment_part_close()) != srs_success) {
+            return srs_error_wrap(err, "hls: segment part close");
+        }
+    }
+
     // close current ts.
     if ((err = muxer->segment_close()) != srs_success) {
         // When close segment error, we must reopen it for next packet to write.
@@ -1043,6 +1430,20 @@ srs_error_t SrsHlsController::reap_segment()
     // open new ts.
     if ((err = muxer->segment_open()) != srs_success) {
         return srs_error_wrap(err, "hls: segment open");
+    }
+
+    if (muxer->low_latency()) {
+        if((err = muxer->segment_part_open()) != srs_success) {
+            return srs_error_wrap(err, "hls: segment part open");
+        }
+
+        if ((err = muxer->flush_video_part(part_tsmc)) != srs_success) {
+            return srs_error_wrap(err, "hls: flush video part");
+        }
+
+        if ((err = muxer->flush_audio_part(part_tsmc)) != srs_success) {
+            return srs_error_wrap(err, "hls: flush audio part");
+        }
     }
     
     // segment open, flush video first.
